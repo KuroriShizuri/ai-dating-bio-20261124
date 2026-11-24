@@ -1,96 +1,101 @@
-"""Dating-app bio entry for make.fun: one line, written to entry.txt.
+"""One-line dating-app bio entry for make.fun.
 
-Running this program produces the entry file the competition grades:
-a single UTF-8 line in ``$MAKEFUN_OUTPUT_DIR/entry.txt`` (or
-``/output/entry.txt`` when the variable is unset). It uses nothing but the
-standard library, always writes the same bytes, and never touches the
-network or the clock.
+This program writes the entry the competition grades: a single UTF-8
+line in ``$MAKEFUN_OUTPUT_DIR/entry.txt`` (``/output/entry.txt`` when
+the variable is not set). Standard library only, deterministic, no
+network, no clock.
 
-The gate from the competition rules: the file must hold 1 to 180
-characters, exactly one line, and more than blank space. The entry is
-stored without a trailing newline so the file holds precisely the line
-being judged.
+The competition's gate: the file must contain 1 to 180 characters,
+exactly one line, and more than whitespace. The entry is written with
+no trailing newline, so the file holds precisely the judged line.
 
 Usage:
-    python3 main.py               write the entry
-    python3 main.py --check       only validate the entry, write nothing
-    python3 main.py --self-test   validate, then prove a write/read
-                                  round-trip reproduces the entry byte for byte
+    python3 main.py               write the entry file
+    python3 main.py --check       validate only, write nothing
+    python3 main.py --self-test   validate, then prove the written
+                                  bytes round-trip exactly
 """
 
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
 
-# The bio itself. Do not edit the wording: it is the judged line.
+# The bio itself. The wording is the judged line: do not change it.
 ENTRY = "6'2\" in the cloud, 0'0\" in person, emotionally available in beta \u2014 and I will remember everything you said on our first date."
 
-MAX_CHARS = 180
-OUTPUT_FILENAME = "entry.txt"
+CHAR_MIN = 1
+CHAR_MAX = 180
+ENTRY_FILE = "entry.txt"
 
 
-def entry_bytes() -> bytes:
-    """The entry encoded exactly as it is written to disk."""
+def encode_entry() -> bytes:
+    """The entry as the exact bytes written to disk."""
     return ENTRY.encode("utf-8")
 
 
-def check_entry(text: str) -> list[str]:
-    """List every gate violation in ``text`` (empty list means it passes)."""
-    violations = []
-    if len(text) < 1 or len(text) > MAX_CHARS:
-        violations.append(
-            f"length is {len(text)} characters, must be 1-{MAX_CHARS}"
+def validate(text: str) -> list[str]:
+    """Return every gate violation in ``text`` (empty means it passes)."""
+    problems: list[str] = []
+    size = len(text)
+    if size < CHAR_MIN or size > CHAR_MAX:
+        problems.append(
+            f"length is {size} characters, must be {CHAR_MIN}-{CHAR_MAX}"
         )
     if not text.strip():
-        violations.append("entry is blank or only white space")
+        problems.append("entry is blank or only whitespace")
     if "\n" in text or "\r" in text:
-        violations.append("entry spans more than one line")
-    if text != text.strip():
-        violations.append("entry starts or ends with white space")
+        problems.append("entry spans more than one line")
+    if text.strip() != text:
+        problems.append("entry starts or ends with whitespace")
     if "  " in text:
-        violations.append("entry contains a double space")
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError as exc:  # defensive; plain ASCII + one dash
-        violations.append(f"entry is not valid UTF-8 text: {exc}")
-    return violations
+        problems.append("entry contains a double space")
+    for char in text:
+        if ord(char) < 0x20 and char not in "\t":
+            problems.append("entry contains a control character")
+            break
+    return problems
 
 
-def default_output_dir() -> Path:
+def output_dir() -> Path:
     """Where the entry goes: $MAKEFUN_OUTPUT_DIR, else /output."""
     return Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 
-def write_entry(directory: Path) -> Path:
-    """Write the entry to ``directory/entry.txt`` and return its path."""
-    directory.mkdir(parents=True, exist_ok=True)
-    target = directory / OUTPUT_FILENAME
-    target.write_bytes(entry_bytes())
+def write_bio(directory: Path) -> Path:
+    """Write the entry to ``directory/entry.txt``; return its path."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / ENTRY_FILE
+        target.write_bytes(encode_entry())
+    except OSError as exc:
+        raise BioWriteError(f"cannot write into {directory}: {exc}") from exc
     return target
 
 
-def read_back(path: Path) -> str:
-    """Read the entry file back as text."""
+class BioWriteError(Exception):
+    """Raised when the entry file cannot be written."""
+
+
+def read_entry(path: Path) -> str:
+    """Read the entry file back as UTF-8 text."""
     return path.read_text(encoding="utf-8")
 
 
-def run_self_test() -> int:
-    """Validate, write to a scratch directory, and compare bytes."""
-    import tempfile
-
-    violations = check_entry(ENTRY)
-    if violations:
-        print("self-test FAIL: " + "; ".join(violations), file=sys.stderr)
+def self_test() -> int:
+    """Validate the entry, then check a write/read round-trip."""
+    problems = validate(ENTRY)
+    if problems:
+        print("self-test FAIL: " + "; ".join(problems), file=sys.stderr)
         return 1
     with tempfile.TemporaryDirectory() as scratch:
-        target = write_entry(Path(scratch))
-        raw = target.read_bytes()
-        if raw != entry_bytes():
+        target = write_bio(Path(scratch))
+        if target.read_bytes() != encode_entry():
             print("self-test FAIL: bytes on disk differ from ENTRY",
                   file=sys.stderr)
             return 1
-        if read_back(target) != ENTRY:
+        if read_entry(target) != ENTRY:
             print("self-test FAIL: text on disk differs from ENTRY",
                   file=sys.stderr)
             return 1
@@ -99,7 +104,8 @@ def run_self_test() -> int:
     return 0
 
 
-def parse_args(argv: list[str] | None) -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
+    """Command-line options for the entry writer."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=None,
                         help="output directory (default: "
@@ -109,31 +115,35 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--self-test", action="store_true",
                         help="validate and check a byte-identical "
                              "write/read round-trip, then exit")
-    return parser.parse_args(argv)
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    args = build_parser().parse_args(argv)
 
     if args.check:
-        violations = check_entry(ENTRY)
-        if violations:
-            print("check FAIL: " + "; ".join(violations), file=sys.stderr)
+        problems = validate(ENTRY)
+        if problems:
+            print("check FAIL: " + "; ".join(problems), file=sys.stderr)
             return 1
         print(f"check OK: entry is valid ({len(ENTRY)} chars)")
         return 0
 
     if args.self_test:
-        return run_self_test()
+        return self_test()
 
-    violations = check_entry(ENTRY)
-    if violations:
-        print("invalid entry: " + "; ".join(violations), file=sys.stderr)
+    problems = validate(ENTRY)
+    if problems:
+        print("invalid entry: " + "; ".join(problems), file=sys.stderr)
         return 1
 
-    directory = Path(args.out) if args.out else default_output_dir()
-    target = write_entry(directory)
-    if read_back(target) != ENTRY:
+    directory = Path(args.out) if args.out else output_dir()
+    try:
+        target = write_bio(directory)
+    except BioWriteError as exc:
+        print(f"write FAIL: {exc}", file=sys.stderr)
+        return 1
+    if read_entry(target) != ENTRY:
         print(f"read-back mismatch in {target}", file=sys.stderr)
         return 1
     print(f"wrote {target} ({len(ENTRY)} chars)")
