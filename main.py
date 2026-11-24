@@ -1,140 +1,142 @@
-"""One-line dating-app bio entry for make.fun.
+"""Dating-app bio entry for make.fun: one line, written to entry.txt.
 
-Writes the single bio line to entry.txt in the output directory
-($MAKEFUN_OUTPUT_DIR, default /output). Stdlib only, deterministic, no
-network and no side effects beyond the one output file.
+Running this program produces the entry file the competition grades:
+a single UTF-8 line in ``$MAKEFUN_OUTPUT_DIR/entry.txt`` (or
+``/output/entry.txt`` when the variable is unset). It uses nothing but the
+standard library, always writes the same bytes, and never touches the
+network or the clock.
 
-Gate (from the competition rules): /output/entry.txt must be UTF-8 text
-of 1 to 180 characters, not only white space. The entry is written with
-no trailing newline so the file holds exactly the judged line.
+The gate from the competition rules: the file must hold 1 to 180
+characters, exactly one line, and more than blank space. The entry is
+stored without a trailing newline so the file holds precisely the line
+being judged.
 
-Modes:
-  (default)   validate ENTRY, write it, read it back, confirm identical
-  --check     validate ENTRY only and exit; writes nothing
-  --self-test validate ENTRY and check a byte-identical write/read
-              round-trip in a temporary directory, then exit
+Usage:
+    python3 main.py               write the entry
+    python3 main.py --check       only validate the entry, write nothing
+    python3 main.py --self-test   validate, then prove a write/read
+                                  round-trip reproduces the entry byte for byte
 """
 
 import argparse
 import os
 import sys
+from pathlib import Path
 
-ENTRY = (
-    "6'2\" in the cloud, 0'0\" in person, emotionally available in beta "
-    "\u2014 and I will remember everything you said on our first date."
-)
-
-# The exact bytes the judges read: the entry encoded once, reused by the
-# writer, the self-test and the read-back check so no step can drift.
-ENTRY_BYTES = ENTRY.encode("utf-8")
+# The bio itself. Do not edit the wording: it is the judged line.
+ENTRY = "6'2\" in the cloud, 0'0\" in person, emotionally available in beta \u2014 and I will remember everything you said on our first date."
 
 MAX_CHARS = 180
+OUTPUT_FILENAME = "entry.txt"
 
 
 def entry_bytes() -> bytes:
-    """Return the entry as the exact UTF-8 bytes written to entry.txt."""
-    return ENTRY_BYTES
+    """The entry encoded exactly as it is written to disk."""
+    return ENTRY.encode("utf-8")
 
 
-def validate(text: str) -> list[str]:
-    """Return a list of gate failures for `text` (empty means valid)."""
-    problems = []
-    if not 1 <= len(text) <= MAX_CHARS:
-        problems.append(f"length {len(text)} chars, must be 1-{MAX_CHARS}")
+def check_entry(text: str) -> list[str]:
+    """List every gate violation in ``text`` (empty list means it passes)."""
+    violations = []
+    if len(text) < 1 or len(text) > MAX_CHARS:
+        violations.append(
+            f"length is {len(text)} characters, must be 1-{MAX_CHARS}"
+        )
     if not text.strip():
-        problems.append("entry is only white space")
+        violations.append("entry is blank or only white space")
     if "\n" in text or "\r" in text:
-        problems.append("entry must be a single line")
-    # Other line-breaking characters would also split the judged line.
-    if any(c in text for c in ("\x0b", "\x0c", "\u2028", "\u2029")):
-        problems.append("entry contains a line-breaking character")
+        violations.append("entry spans more than one line")
     if text != text.strip():
-        problems.append("entry has leading or trailing whitespace")
+        violations.append("entry starts or ends with white space")
     if "  " in text:
-        problems.append("entry contains a double space")
-    if any(ord(c) < 32 for c in text):
-        problems.append("entry contains a control character")
+        violations.append("entry contains a double space")
     try:
         text.encode("utf-8")
-    except UnicodeEncodeError as exc:  # pragma: no cover - defensive
-        problems.append(f"not encodable as UTF-8: {exc}")
-    return problems
+    except UnicodeEncodeError as exc:  # defensive; plain ASCII + one dash
+        violations.append(f"entry is not valid UTF-8 text: {exc}")
+    return violations
 
 
-def write_entry(out_dir: str) -> str:
-    """Write ENTRY to entry.txt under `out_dir`; return the file path."""
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "entry.txt")
-    with open(path, "wb") as f:
-        f.write(entry_bytes())
-    return path
+def default_output_dir() -> Path:
+    """Where the entry goes: $MAKEFUN_OUTPUT_DIR, else /output."""
+    return Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 
-def read_back(path: str) -> bytes:
-    """Read entry.txt back as raw bytes for a byte-exact comparison."""
-    with open(path, "rb") as f:
-        return f.read()
+def write_entry(directory: Path) -> Path:
+    """Write the entry to ``directory/entry.txt`` and return its path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / OUTPUT_FILENAME
+    target.write_bytes(entry_bytes())
+    return target
 
 
-def self_test() -> int:
-    """Validate ENTRY and check a byte-identical write/read round-trip."""
-    problems = validate(ENTRY)
-    if problems:
-        print("self-test FAIL: " + "; ".join(problems), file=sys.stderr)
-        return 1
+def read_back(path: Path) -> str:
+    """Read the entry file back as text."""
+    return path.read_text(encoding="utf-8")
+
+
+def run_self_test() -> int:
+    """Validate, write to a scratch directory, and compare bytes."""
     import tempfile
 
-    with tempfile.TemporaryDirectory() as tmp:
-        path = write_entry(tmp)
-        raw = read_back(path)
+    violations = check_entry(ENTRY)
+    if violations:
+        print("self-test FAIL: " + "; ".join(violations), file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory() as scratch:
+        target = write_entry(Path(scratch))
+        raw = target.read_bytes()
         if raw != entry_bytes():
-            print("self-test FAIL: read-back bytes differ from ENTRY",
+            print("self-test FAIL: bytes on disk differ from ENTRY",
                   file=sys.stderr)
             return 1
-        if raw.decode("utf-8") != ENTRY:
-            print("self-test FAIL: read-back text differs from ENTRY",
+        if read_back(target) != ENTRY:
+            print("self-test FAIL: text on disk differs from ENTRY",
                   file=sys.stderr)
             return 1
-    print(f"self-test OK: {len(ENTRY)} chars, single line, "
-          f"byte-identical round-trip")
+    print(f"self-test OK: {len(ENTRY)} chars, one line, "
+          "round-trip byte-identical")
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=None,
                         help="output directory (default: "
                              "$MAKEFUN_OUTPUT_DIR or /output)")
-    parser.add_argument("--self-test", action="store_true",
-                        help="validate ENTRY and check a byte-identical "
-                             "write/read round-trip, then exit")
     parser.add_argument("--check", action="store_true",
-                        help="validate ENTRY only (no file written) and exit")
-    args = parser.parse_args(argv)
+                        help="validate the entry only; write nothing")
+    parser.add_argument("--self-test", action="store_true",
+                        help="validate and check a byte-identical "
+                             "write/read round-trip, then exit")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     if args.check:
-        problems = validate(ENTRY)
-        if problems:
-            print("check FAIL: " + "; ".join(problems), file=sys.stderr)
+        violations = check_entry(ENTRY)
+        if violations:
+            print("check FAIL: " + "; ".join(violations), file=sys.stderr)
             return 1
-        print(f"check OK: ENTRY valid ({len(ENTRY)} chars)")
+        print(f"check OK: entry is valid ({len(ENTRY)} chars)")
         return 0
 
     if args.self_test:
-        return self_test()
+        return run_self_test()
 
-    problems = validate(ENTRY)
-    if problems:
-        print("invalid ENTRY: " + "; ".join(problems), file=sys.stderr)
+    violations = check_entry(ENTRY)
+    if violations:
+        print("invalid entry: " + "; ".join(violations), file=sys.stderr)
         return 1
 
-    out_dir = args.out or os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
-    path = write_entry(out_dir)
-    # Read back and confirm the file holds exactly the entry, byte for byte.
-    if read_back(path) != entry_bytes():
-        print(f"read-back mismatch in {path}", file=sys.stderr)
+    directory = Path(args.out) if args.out else default_output_dir()
+    target = write_entry(directory)
+    if read_back(target) != ENTRY:
+        print(f"read-back mismatch in {target}", file=sys.stderr)
         return 1
-    print(f"wrote {path} ({len(ENTRY)} chars)")
+    print(f"wrote {target} ({len(ENTRY)} chars)")
     return 0
 
 
