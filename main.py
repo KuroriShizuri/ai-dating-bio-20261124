@@ -24,7 +24,16 @@ ENTRY = (
     "\u2014 and I will remember everything you said on our first date."
 )
 
+# The exact bytes the judges read: the entry encoded once, reused by the
+# writer, the self-test and the read-back check so no step can drift.
+ENTRY_BYTES = ENTRY.encode("utf-8")
+
 MAX_CHARS = 180
+
+
+def entry_bytes() -> bytes:
+    """Return the entry as the exact UTF-8 bytes written to entry.txt."""
+    return ENTRY_BYTES
 
 
 def validate(text: str) -> list[str]:
@@ -36,10 +45,15 @@ def validate(text: str) -> list[str]:
         problems.append("entry is only white space")
     if "\n" in text or "\r" in text:
         problems.append("entry must be a single line")
+    # Other line-breaking characters would also split the judged line.
+    if any(c in text for c in ("\x0b", "\x0c", "\u2028", "\u2029")):
+        problems.append("entry contains a line-breaking character")
     if text != text.strip():
         problems.append("entry has leading or trailing whitespace")
     if "  " in text:
         problems.append("entry contains a double space")
+    if any(ord(c) < 32 for c in text):
+        problems.append("entry contains a control character")
     try:
         text.encode("utf-8")
     except UnicodeEncodeError as exc:  # pragma: no cover - defensive
@@ -51,24 +65,29 @@ def write_entry(out_dir: str) -> str:
     """Write ENTRY to entry.txt under `out_dir`; return the file path."""
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "entry.txt")
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(ENTRY)
+    with open(path, "wb") as f:
+        f.write(entry_bytes())
     return path
 
 
-def self_test() -> int:
-    """Validate ENTRY, write it to a temp dir, read it back, compare bytes."""
-    import tempfile
+def read_back(path: str) -> bytes:
+    """Read entry.txt back as raw bytes for a byte-exact comparison."""
+    with open(path, "rb") as f:
+        return f.read()
 
+
+def self_test() -> int:
+    """Validate ENTRY and check a byte-identical write/read round-trip."""
     problems = validate(ENTRY)
     if problems:
         print("self-test FAIL: " + "; ".join(problems), file=sys.stderr)
         return 1
+    import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         path = write_entry(tmp)
-        with open(path, "rb") as f:
-            raw = f.read()
-        if raw != ENTRY.encode("utf-8"):
+        raw = read_back(path)
+        if raw != entry_bytes():
             print("self-test FAIL: read-back bytes differ from ENTRY",
                   file=sys.stderr)
             return 1
@@ -111,11 +130,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.out or os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     path = write_entry(out_dir)
-    # Read back and confirm the file holds exactly the entry.
-    with open(path, encoding="utf-8") as f:
-        if f.read() != ENTRY:
-            print(f"read-back mismatch in {path}", file=sys.stderr)
-            return 1
+    # Read back and confirm the file holds exactly the entry, byte for byte.
+    if read_back(path) != entry_bytes():
+        print(f"read-back mismatch in {path}", file=sys.stderr)
+        return 1
     print(f"wrote {path} ({len(ENTRY)} chars)")
     return 0
 
